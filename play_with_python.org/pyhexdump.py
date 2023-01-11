@@ -170,12 +170,27 @@ def format_output(offect: list, ascii_value: List[str], count_bytes, ascii_statu
                 # print(len(temp))
                 if len(temp) % 8 == 0 and len(temp) != 0:
                     # print(temp)
-                    out_put = f"{offect[num]} {' '.join(temp).zfill(4)}"
+                    out_put: str = f"{offect[num]} {' '.join(temp).zfill(4)}"
                     temp = []
             print(out_put)
         # print('\n')
         print('{:07x}'.format(count_bytes * 2))
 
+def main(_data, ascii_status):
+    hexdump_data = list(hexdump(_data, args['C']))
+    if ascii_status:
+        offset, ascii_value, ascii_char = unpack_hexdump(hexdump_data, args['C'])
+        count_bytes = len(ascii_value)
+        format_offset = get_offset(offset)
+        format_ascii_value = format_unpacked_values_from_hexdump(ascii_value, args['C'])
+        format_ascii_char = format_unpacked_values_from_hexdump(ascii_char)
+        format_output(format_offset, format_ascii_value, count_bytes, ascii_status=args['C'], ascii_char=format_ascii_char)
+    else:
+        offset, ascii_value = unpack_hexdump(hexdump_data)
+        count_bytes = len(ascii_value)
+        format_offset = get_offset(offset)
+        format_ascii_value = format_unpacked_values_from_hexdump(ascii_value)
+        format_output(format_offset, format_ascii_value, count_bytes)
 
 if __name__ == '__main__':
     args = handle_args()
