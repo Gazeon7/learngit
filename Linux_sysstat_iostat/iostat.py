@@ -1,365 +1,197 @@
-import platform
 import time
 from datetime import datetime
-import argparse
+import platform
+from multiprocessing import cpu_count
+from collections import namedtuple
 
-proc_disk_stats = '/proc/diskstats'
-proc_stat = '/proc/stat'
-proc_uptime = '/proc/uptime'
-date = str(datetime.now().year) + '年' + str(datetime.now().month) + '月' + str(datetime.now().day) + '日'
+import argparse
+from pprint import pprint
+from typing import Type
+
+PROC_DISKSTATS = '/proc/diskstats'
+PROC_STATS = '/proc/stat'
+PROC_UPTIME = '/proc/uptime'
+DATE = f"/{datetime.now().month}/{datetime.now().day}/{datetime.now().year}"
+VERSION = '{} {} ({}) {:>19} _{}_         ({} CPU)'.format(platform.system(), platform.release(), platform.node(), DATE,
+                                                           platform.machine(), cpu_count())
+dev_status = namedtuple('dev_status', (
+    'major_number', 'minor_number', 'device_name', 'rd_ios', 'rd_merges', 'rd_sectors', 'rd_ticks', 'wr_ios',
+    'wr_merges', 'wr_sectors', 'wr_ticks', 'in_flight', 'io_ticks', 'time_in_queue'))
+cpu_status = namedtuple('cpu_status',
+                        ('user', 'nice', 'system', 'idle', 'io_wait', 'irq', 'softirq', 'steal', 'guest', 'guest_nice'))
+dev_targets = namedtuple('dev_targets', ('Device', 'tps', 'r_s', 'w_s', 'rrqm_s', 'wrqm_s', 'rkB_s',
+                                      'wkB_s', 'kB_read', 'kB_wrtn', 'avgrq_sz', 'avgqu_sz',
+                                      'await_', 'r_await', 'w_await', 'svctm', 'util'))
+cpu_targets = namedtuple('cpu_targets', ('user', 'nice', 'system', 'iowait', 'steal', 'idle'))
 
 
 def handle_args():
+    """
+    解析参数
+    :return:
+    """
     parser = argparse.ArgumentParser(description='print status from CPU such as tps and so on.')
-    parser.add_argument('-x', action='store_true', help='print status etailedly')
-    parser.add_argument('-m', action='store_true', help='print status in MB')
-    parser.add_argument('device', type=str, nargs='?', default=None, help='print status which user ordered')
+    parser.add_argument('-x', action='store_true', required=False, help='print status etailedly')
+    parser.add_argument('-m', action='store_true', required=False, help='print status in MB')
     parser.add_argument('seconds', type=int, nargs='?', default=0, help='print status after seconds')
+    parser.add_argument('device', type=str, nargs='?', default=None, help='print status which user ordered')
     _args = vars(parser.parse_args())
     return _args
 
 
-def sys_time() -> list:
+def sys_time() -> float:
     """
-    获取系统启动到现在的时间和系统空闲时间
+    获取系统启动到现在的时间
     :return:
     """
-    with open(proc_uptime, 'r') as f:
-        return f.read().strip('\n').split(' ')
+    with open(PROC_UPTIME, 'r') as f:
+        return float(f.read().strip('\n').split(' ')[0])
 
 
-def title():
+def proc_disk_tup(dev: str) -> (Type[namedtuple], datetime):
     """
-    输出令第一行系统信息
+    获取需要的磁盘信息
+    :param dev: 磁盘名称
     :return:
     """
-    return f'{platform.system()} {platform.release()} ({platform.node()})         {date}  _{platform.machine()}_    '
-
-
-def get_proc_diskstats():
-    with open(proc_disk_stats, 'r') as fd:
-        disk_stats = fd.readlines()
-        res = []
-        row = []
-        for vals in disk_stats:
-            # print(vals)
-            temp = (vals.split(' '))
-            # print(temp)
-            for ele in temp:
-                if ele != '':
-                    row.append(ele)
-                    # print(row)
-            res.append(row)
-            # print(row)
-            row = []  # 重置为空存放下一行
-            # print(temp)
-        # print(res)
-        return res
-
-
-def get_proc_stat():
     res = []
-    with open(proc_stat, 'r') as f:
+    with open(PROC_DISKSTATS, 'r') as fd:
         while True:
-            if 'cpu' in f.read(5):
-                # f.seek(5, SEEK_SET)
-                res.append(f.readline().strip().strip('\n').split(' '))
+            row = fd.readline().strip(' ').strip('\n').split(' ')  # 数据处理
+            if dev in row:
+                temp = [x for x in row if x != '']
+                for val in temp:
+                    try:
+                        res.append(float(val.strip('\n')))
+                    except ValueError:
+                        res.append(val.strip('\n'))
+                return dev_status._make(res), datetime.now()
             else:
-                break
-    return res
+                return None
 
 
-def diskstats_targets() -> dict:
-    data = get_proc_diskstats()
-    res_dict = {
-        'major_number': [],  # 主设备号
-        'minor_number': [],  # 次设备号
-        'device_name': [],  # 设备名称
-        'rd_ios': [],  # read_completed_successfully   3读操作的次数
-        'rd_merges': [],  # 合并读操作的次数
-        'rd_sectors': [],  # 读取的扇区数量
-        'rd_ticks': [],  # 读操作消耗的时间  以毫秒为单位
-        'wr_ios': [],  # 写操作的次数
-        'wr_merges': [],  # 合并写操作的次数
-        'wr_sectors': [],  # 写入的扇区数量
-        'wr_ticks': [],  # 写操作消耗的时间  以毫秒为单位
-        'in_fligth': [],  # 当前未完成的I/O数量
-        'io_ticks': [],  # 该设备用于处理I/O的自然时间(wall-clock time)
-        'time_in_queue': []  # 对字段#13(io_ticks)的加权值
-    }
-
-    for ind, val in enumerate(data):
-        # print(val)
-        res_dict['major_number'].append(float(val[0]))
-        res_dict['minor_number'].append(float(val[1]))
-        res_dict['device_name'].append(val[2])
-        res_dict['rd_ios'].append(float(val[3]))
-        res_dict['rd_merges'].append(float(val[4]))
-        res_dict['rd_sectors'].append(float(val[5]))
-        res_dict['rd_ticks'].append(float(val[6]))
-        res_dict['wr_ios'].append(float(val[7]))
-        res_dict['wr_merges'].append(float(val[8]))
-        res_dict['wr_sectors'].append(float(val[9]))
-        res_dict['wr_ticks'].append(float(val[10]))
-        res_dict['in_fligth'].append(float(val[11]))
-        res_dict['io_ticks'].append(float(val[12]))
-        res_dict['time_in_queue'].append(float(val[13].strip('\n')))
-    return res_dict
-
-
-def stat_targets() -> dict:
-    data = get_proc_stat()
-    res_dict = {
-        'user': [],  # 从系统启动开始累计到当前时刻，处于用户态的运行时间，不包含 nice值为负进程。
-        'nice': [],  # 从系统启动开始累计到当前时刻，nice值为负的进程所占用的CPU时间
-        'system': [],  # 从系统启动开始累计到当前时刻，处于核心态的运行时间
-        'idle': [],  # 从系统启动开始累计到当前时刻，除IO等待时间以外的其它等待时间
-        'iowait': [],  # 从系统启动开始累计到当前时刻，IO等待时间
-        'irq': [],  # 从系统启动开始累计到当前时刻，硬中断时间
-        'softirq': [],  # 从系统启动开始累计到当前时刻，软中断时间
-        'steal': [],  # 在虚拟环境中运行时，在其他操作系统上花费的时间是多少
-        'guest': [],  # 在Linux内核的控制下为客户操作系统运行虚拟CPU的时间
-        'guest_nice': []  # 修改优先级进程的运行时间
-    }
-    for ind, val in enumerate(data):
-        res_dict['user'].append(val[0]),
-        res_dict['nice'].append(val[1]),
-        res_dict['system'].append(val[2]),
-        res_dict['idle'].append(val[3]),
-        res_dict['iowait'].append(val[4]),
-        res_dict['irq'].append(val[5]),
-        res_dict['softirq'].append(val[6]),
-        res_dict['steal'].append(val[7]),
-        res_dict['guest'].append(val[8]),
-        res_dict['guest_nice'].append(val[9])
-    return res_dict
-
-
-def device_data(_interval) -> dict:
+def proc_stat_tup() -> Type[namedtuple]:
     """
-    输出device所需的值到字典
-    :param _interval: 时间间隔
+    获取需要的CPU信息
     :return:
     """
-    old_disk_stats_data = diskstats_targets()
-    new_disk_stats_data = diskstats_targets()
-    sys_start_time, sys_idle_time = float(sys_time()[0]), float(sys_time()[1])  # 系统启动到现在的时间和系统空闲时间
-    device_targets = ('Device', 'tps', 'r/s', 'w/s', 'rrqm/s', 'wrqm/s', ('kB_read/s', 'MB_read/s', 'rkB/s'),
-                      ('kB_wrtn/s', 'MB_wrtn/s', 'wkB/s'),
-                      ('kB_read', 'MB_read'), ('kB_wrtn', 'MB_wrtn'), 'avgrq-sz', 'avgqu-sz',
-                      'await', 'r_await', 'w_await', 'svctm', '%util')
-    device_dic = {}
-    for key in device_targets:
-        device_dic[key] = []
-    device_dic['Device'] = new_disk_stats_data['device_name']
-    for ind, val in enumerate(device_dic['Device']):
-        device_dic['tps'].append(
-            round((((new_disk_stats_data['rd_ios'][ind] - old_disk_stats_data['rd_ios'][ind]) + (
-                    new_disk_stats_data['wr_ios'][ind] - old_disk_stats_data['wr_ios'][ind])) / sys_start_time / _interval)
-                  if _interval else (old_disk_stats_data['rd_ios'][ind] +old_disk_stats_data['wr_ios'][ind]) / sys_start_time, 2))
-        device_dic['r/s'].append(
-            ((new_disk_stats_data['rd_ios'][ind] - old_disk_stats_data['rd_ios'][
-                ind]) / sys_start_time / _interval) if _interval else round(
-                old_disk_stats_data['rd_ios'][ind] / sys_start_time, 2))
-        device_dic['w/s'].append(
-            ((new_disk_stats_data['wr_ios'][ind] - old_disk_stats_data['wr_ios'][
-                ind]) / sys_start_time / _interval) if _interval else round(
-                old_disk_stats_data['wr_ios'][ind] / sys_start_time, 2))
-        device_dic['rrqm/s'].append(
-            ((new_disk_stats_data['rd_merges'][ind] - old_disk_stats_data['rd_merges'][
-                ind]) / sys_start_time / _interval) if _interval else round(
-                old_disk_stats_data['rd_merges'][ind] / sys_start_time, 2))
-        device_dic['wrqm/s'].append(
-            ((new_disk_stats_data['wr_merges'][ind] - old_disk_stats_data['wr_merges'][
-                ind]) / sys_start_time / _interval) if _interval else round(
-                old_disk_stats_data['wr_merges'][ind] / sys_start_time, 2))
-        device_dic[('kB_read/s', 'MB_read/s', 'rkB/s')].append(
-           round((((new_disk_stats_data['rd_sectors'][ind] - old_disk_stats_data['rd_sectors'][
-                ind]) / sys_start_time / _interval) if _interval else old_disk_stats_data['rd_sectors'][ind]) / sys_start_time * (512 / 1024), 2))
-        device_dic[('kB_wrtn/s', 'MB_wrtn/s', 'wkB/s')].append(round(
-            (((new_disk_stats_data['wr_sectors'][ind] - old_disk_stats_data['wr_sectors'][
-                ind]) /sys_start_time / _interval) if _interval else old_disk_stats_data['wr_sectors'][ind]) / sys_start_time * (512 / 1024), 2))
-        device_dic[('kB_read', 'MB_read')].append(
-            (device_dic[('kB_read/s', 'MB_read/s', 'rkB/s')][ind] * sys_start_time) if _interval else
-            device_dic[('kB_read/s', 'MB_read/s', 'rkB/s')][ind])
-        device_dic[('kB_wrtn', 'MB_wrtn')].append(
-            (device_dic[('kB_wrtn/s', 'MB_wrtn/s', 'wkB/s')][ind] * sys_start_time) if _interval else
-            device_dic[('kB_wrtn/s', 'MB_wrtn/s', 'wkB/s')][ind])
-        device_dic['avgrq-sz'].append(
-            round(((new_disk_stats_data['rd_sectors'][ind] - old_disk_stats_data['rd_sectors'][ind]) +
-                   (new_disk_stats_data['wr_sectors'][ind] - old_disk_stats_data['wr_sectors'][ind])) /
-                  ((new_disk_stats_data['rd_ios'][ind] - old_disk_stats_data['rd_ios'][ind]) +
-                   (new_disk_stats_data['wr_ios'][ind] - old_disk_stats_data['wr_ios'][ind])), 2)
-            if round(((new_disk_stats_data['rd_ios'][ind] - old_disk_stats_data['rd_ios'][ind]) +
-                      (new_disk_stats_data['wr_ios'][ind] - old_disk_stats_data['wr_ios'][ind])), 2)
-            else 0)
-        device_dic['avgqu-sz'].append(round(
-            ((new_disk_stats_data['time_in_queue'][ind] - old_disk_stats_data['time_in_queue'][
-                ind]) / sys_start_time / _interval) if _interval else old_disk_stats_data['time_in_queue'][ind] / sys_start_time, 2))
-        device_dic['await'].append(round(
-            (new_disk_stats_data['rd_ticks'][ind] - old_disk_stats_data['rd_ticks'][ind] +
-             new_disk_stats_data['wr_ticks'][ind] - old_disk_stats_data['wr_ticks'][ind]) /
-            (new_disk_stats_data['rd_ios'][ind] - old_disk_stats_data['rd_ios'][ind] +
-             new_disk_stats_data['wr_ios'][ind] - old_disk_stats_data['wr_ios'][ind]), 2) if round(
-            (new_disk_stats_data['rd_ios'][ind] - old_disk_stats_data['rd_ios'][ind] +
-             new_disk_stats_data['wr_ios'][ind] - old_disk_stats_data['wr_ios'][ind]), 2) else 0)
-        device_dic['r_await'].append(
-            round((new_disk_stats_data['rd_ticks'][ind] - old_disk_stats_data['rd_ticks'][ind]) / (
-                    new_disk_stats_data['rd_ios'][ind] - old_disk_stats_data['rd_ios'][ind]), 2) if
-            round(new_disk_stats_data['rd_ios'][ind] - old_disk_stats_data['rd_ios'][ind], 2) else 0)
-        device_dic['w_await'].append(
-            round((new_disk_stats_data['wr_ios'][ind] - old_disk_stats_data['wr_ticks'][ind]) / (
-                    new_disk_stats_data['wr_ios'][ind] - old_disk_stats_data['wr_ios'][ind]), 2) if
-            round(new_disk_stats_data['wr_ios'][ind] - old_disk_stats_data['wr_ios'][ind], 2) else 0)
-        device_dic['%util'].append(
-            round((new_disk_stats_data['io_ticks'][ind] - old_disk_stats_data['io_ticks'][ind]) / sys_start_time,
-                  2))
-        device_dic['svctm'].append(
-            round(device_dic['%util'][ind] / device_dic['tps'][ind], 2) if device_dic['tps'][ind] else 0)
-        # else:
-        #     # device_dic['tps'].append(
-        #     #     )
-        #     # device_dic['r/s'].append()
-        #     device_dic['w/s'].append()
-        #     device_dic['rrqm/s'].append()
-        #     device_dic['wrqm/s'].append()
-        #     device_dic[('kB_read/s', 'MB_read/s', 'rkB/s')].append(
-        #         round((() * (512 / 1024) / sys_start_time), 2))
-        #     device_dic[('kB_wrtn/s', 'MB_wrtn/s', 'wkB/s')].append(
-        #         round(((old_disk_stats_data['wr_sectors'][ind]) * (512 / 1024) / sys_start_time), 2))
-        #     device_dic[('kB_read', 'MB_read')].append(
-        #         round(device_dic[('kB_read/s', 'MB_read/s', 'rkB/s')][ind] * sys_start_time, 2))
-        #     device_dic[('kB_wrtn', 'MB_wrtn')].append(
-        #         round(device_dic[('kB_wrtn/s', 'MB_wrtn/s', 'wkB/s')][ind] * sys_start_time, 2))
-        #     device_dic['avgrq-sz'].append(
-        #         round((old_disk_stats_data['rd_sectors'][ind] + old_disk_stats_data['wr_sectors'][ind]) /
-        #               (old_disk_stats_data['rd_ios'][ind] + old_disk_stats_data['wr_ios'][ind]) / sys_start_time, 2) if round(
-        #             (old_disk_stats_data['rd_ios'][ind] + old_disk_stats_data['wr_ios'][ind]), 2) else 0)
-        #     device_dic['avgqu-sz'].append(round(old_disk_stats_data['time_in_queue'][ind] / sys_start_time, 2))
-        #     device_dic['await'].append(round(
-        #         (old_disk_stats_data['rd_ticks'][ind] + old_disk_stats_data['wr_ticks'][ind]) / (
-        #                 old_disk_stats_data['rd_ios'][ind] + old_disk_stats_data['wr_ios'][ind]), 2) if round(
-        #         (old_disk_stats_data['rd_ios'][ind] + old_disk_stats_data['wr_ios'][ind]), 2) else 0)
-        #     device_dic['r_await'].append(
-        #         round(old_disk_stats_data['rd_ticks'][ind] / old_disk_stats_data['rd_ios'][ind], 2) if
-        #         old_disk_stats_data['rd_ios'][ind] else 0)
-        #     device_dic['w_await'].append(
-        #         round(old_disk_stats_data['wr_ticks'][ind] / old_disk_stats_data['wr_ios'][ind], 2) if
-        #         old_disk_stats_data['wr_ios'][ind] else 0)
-        #     device_dic['%util'].append(round(old_disk_stats_data['io_ticks'][ind] / sys_start_time, 2))
-        #     device_dic['svctm'].append(
-        #         round(device_dic['%util'][ind] / device_dic['tps'][ind], 2) if device_dic['tps'][ind] else 0)
-    # pprint(f"old: {old_disk_stats_data}")
-    # pprint(f"new: {new_disk_stats_data}")
-    # print(f"tps: {device_dic['tps']}")
-    # print(new_disk_stats_data['rd_ios'][0] - old_disk_stats_data['rd_ios'][0])
-    # print(f"r/s: {device_dic['r/s']}")
-    # print(f"w/s: {device_dic['w/s']}")
-    # print(f"rrqm/s: {device_dic['rrqm/s']}")
-    # print(f"wrqm/s: {device_dic['wrqm/s']}")
-    # print(f"('kB_read/s','MB_read/s', 'rkB/s'): {device_dic[('kB_read/s', 'MB_read/s', 'rkB/s')]}")
-    # print(f"('kB_wrtn/s','MB_wrtn/s', 'wkB/s'): {device_dic[('kB_wrtn/s', 'MB_wrtn/s', 'wkB/s')]}")
-    # print(f"('kB_read','MB_read'): {device_dic[('kB_read', 'MB_read')]}")
-    # print(f"('kB_wrtn', 'MB_wrtn'): {device_dic[('kB_wrtn', 'MB_wrtn')]}")
-    # print(f"avgrq-sz : {device_dic['avgrq-sz']}")
-    # print(f"await: {device_dic['await']}")
-    # print(f"r_await: {device_dic['r_await']}")
-    # print(f"w_await: {device_dic['w_await']}")
-    # print(f"%util: {device_dic['%util']}")
-    return device_dic
+    with open(PROC_STATS, 'r') as fd:
+        fd.read(3)  # 读掉cpu序号
+        cpu = fd.readline().strip(' ').strip('\n').split(' ')  # 数据处理
+        return cpu_status._make([x for x in cpu if x != ''])  # 返回cpu命名元组
 
 
-def avg_cpu_data() -> dict:
-    all_data = 0
-    avg_cpu_dic = {}
-    for val in stat_targets().values():
-        all_data += float(val[0])
-    for key, value in stat_targets().items():
-        avg_cpu_dic[key] = round(float(value[0]) / all_data * 100, 2)
-    return avg_cpu_dic
+def dev_difference(old: dev_status, new: dev_status):
+    """
+    计算前后两次差值
+    :param old: 第一次采样
+    :param new: 第二次采样
+    :return:
+    """
+    _old = dev_status._asdict(old)
+    _new = dev_status._asdict(new)
+    dif = []
+    for o, n in zip(_old.values(), _new.values()):
+        try:
+            dif.append(round(float(n) - float(o), 2))
+        except ValueError:
+            dif.append(o)
+    return dev_status._make(dif)
 
 
-def avg_cpu_output():
-    avg_cpu = avg_cpu_data()
-    print("avg-cpu:  %user  %nice  %system  %iowait  %steal  %idle")
-    print('        %s'    '%s'     '%s'    '%s'    '%s'    '%s' % (str(avg_cpu['user']).rjust(7, ' '),
-                                                                   str(avg_cpu['nice']).rjust(7, ' '),
-                                                                   str(avg_cpu['system']).rjust(7, ' '),
-                                                                   str(avg_cpu['iowait']).rjust(7, ' '),
-                                                                   str(avg_cpu['steal']).rjust(7, ' '),
-                                                                   str(avg_cpu['idle']).rjust(7, ' ')))
+def cal_dev_targets(m: bool, interval: float, device: str, source_data, diff):
+    """
+    计算采样后各项指标
+    :param interval: 采样周期
+    :param source_data: 原数据
+    :param diff: 采样
+    :return:
+    """
+    divsor = 1024 if m else 1
+    sys_t = sys_time()
+    diff: dev_status
+    source_data: dev_status
+    res = dev_targets()
+    dev_targets.Device = device
+    dev_targets.tps = ((diff.rd_ios + diff.wr_ios) / sys_t / interval) if interval else (
+                                                                                                    source_data.rd_ios + source_data.wr_ios) / sys_t
+    dev_targets.r_s = (diff.rd_ios / sys_t / interval) if interval else (source_data.rd_ios / sys_t)
+    dev_targets.w_s = (diff.wr_ios / sys_t / interval) if interval else (source_data.wr_ios / sys_t)
+    dev_targets.rrqm_s = (diff.rd_merges / sys_t / interval) if interval else (source_data.rd_merges / sys_t)
+    dev_targets.wrqm_s = (diff.wr_merges / sys_t / interval) if interval else (source_data.rd_merges / sys_t)
+    dev_targets.rkB_s = (
+                diff.rd_sectors / sys_t * (512 / 1024) / interval) if interval else source_data.rd_sectors / sys_t * (
+                512 / 1024) / m
+    dev_targets.wkB_s = (
+                diff.wr_sectors / sys_t * (512 / 1024) / interval) if interval else source_data.rd_sectors / sys_t * (
+                512 / 1024) / m
+    dev_targets.kB_read = (diff.rd_sectors * (512 / 1024) / interval) if interval else source_data.rd_sectors * (
+                512 / 1024) / m
+    dev_targets.kB_wrtn = (diff.wr_sectors * (512 / 1024) / interval) if interval else source_data.wr_sectors * (
+                512 / 1024) / m
+    dev_targets.avgrq_sz = (diff.rd_sectors + diff.wr_sectors) / (diff.rd_ios + diff.wr_ios) if (
+                diff.rd_ios + diff.wr_ios) else (source_data)
+    dev_targets.avgqu_sz = (diff.time_in_queue / interval) if interval else source_data.time_in_queue
+    dev_targets.await_ = ((diff.rd_ticks + diff.wr_ticks) / (diff.rd_ios + diff.wr_ios)) if (
+                diff.rd_ios + diff.wr_ios) else (source_data.rd_ticks + source_data.wr_ticks) / (
+                source_data.rd_ios + source_data.wr_ios)
+    dev_targets.r_await = (diff.rd_ticks / diff.rd_ios) if diff.rd_ios else (source_data.rd_ticks / source_data.rd_ios)
+    dev_targets.w_await = (diff.wr_ticks / diff.wr_ios) if diff.wr_ios else (source_data.wr_ticks / source_data.wr_ios)
+    dev_targets.util = (diff.io_ticks / sys_t / interval) if interval else (source_data.io_ticks / sys_t)
+    dev_targets.svctm = (dev_targets.util / dev_targets.tps) if dev_targets.tps else dev_targets.util
 
 
-def device_output(x, m, device, seconds):
-    device_dic = device_data(int(seconds))
 
-    if m:
-        if x:
-            print('\n')
-            print(
-                "Device:         rrqm/s   wrqm/s     r/s     w/s    rMB/s    wMB/s avgrq-sz avgqu-sz   await r_await w_await  svctm  %util")
-            if device:
-                ind = device_dic['Device'].index(device)
-                print('%s         %s   %s     %s     %s    %s    %s %s %s   %s   %s %s  %s  %s' % (
-                device_dic['Device'][ind],
-                device_dic['rrqm/s'][ind],
-                device_dic['wrqm/s'][ind],
-                device_dic['r/s'][ind],
-                device_dic['w/s'][ind],
-                round(device_dic[('kB_read/s', 'MB_read/s', 'rkB/s')][ind] / 1024, 2),
-                round(device_dic[('kB_wrtn/s', 'MB_wrtn/s', 'wkB/s')][ind] / 1024, 2),
-                device_dic['avgrq-sz'][ind],
-                device_dic['avgqu-sz'][ind],
-                device_dic['await'][ind],
-                device_dic['r_await'][ind],
-                device_dic['w_await'][ind],
-                device_dic['svctm'][ind],
-                device_dic['%util'][ind])
-                      )
-            for ind, val in enumerate(device_dic['Device']):
-                if val.startswith(('sda', 'dm')):
-                    print("%s         %s   %s     %s     %s    %s    %s %s %s   %s   %s %s  %s  %s"
-                          % (device_dic['Device'][ind],
-                             device_dic['rrqm/s'][ind],
-                             device_dic['wrqm/s'][ind],
-                             device_dic['r/s'][ind],
-                             device_dic['w/s'][ind],
-                             round(device_dic[('kB_read/s', 'MB_read/s', 'rkB/s')][ind] / 1024, 2),
-                             round(device_dic[('kB_wrtn/s', 'MB_wrtn/s', 'wkB/s')][ind] / 1024, 2),
-                             device_dic['avgrq-sz'][ind],
-                             device_dic['avgqu-sz'][ind],
-                             device_dic['await'][ind],
-                             device_dic['r_await'][ind],
-                             device_dic['w_await'][ind],
-                             device_dic['svctm'][ind],
-                             device_dic['%util'][ind]))
-                    # print(device_dic['avgqu-sz'][ind])
-                    # print(device_dic['wrqm/s'])
-                    # print(device_dic[('kB_read/s', 'MB_read/s', 'rkB/s')])
-                    # print(device_dic['avgrq-sz'])
-                    print(device_dic['avgqu-sz'])
-        else:
-            print("Device:            tps    MB_read/s    MB_wrtn/s    MB_read    MB_wrtn")
+def cpu_info(old_cpu_data, new_cpu_data):
+    """
+    计算cpu各参数采样差值
+    :return:
+    """
+
+    old_cpu: cpu_status = old_cpu_data
+    new_cpu: cpu_status = new_cpu_data
+    total = cpu_status.user + cpu_status.nice + cpu_status.system + cpu_status.io_wait + cpu_status.idle
+    cpu_targets.user = (new_cpu.user - old_cpu.user) / total * 100
+    cpu_targets.nice = (new_cpu.nice - old_cpu.nice) / total * 100
+    cpu_targets.system = (new_cpu.system - old_cpu.system) / total * 100
+    cpu_targets.iowait = (new_cpu.io_wait - old_cpu.io_wait) / total * 100
+    cpu_targets.idle = (new_cpu.idle - old_cpu.idle) / total * 100
+
+
+def format_out_put(x: bool, m: bool, cpu_info: cpu_targets, dev_info: dev_targets):
+    print(VERSION)
+    print('avg-cpu:  %user   %nice %system %iowait  %steal   %idle')
+    print('{:>15} {:>7} {:>7} {:>7} {:>7} {:>7}'.format(cpu_info.user, cpu_info.nice, cpu_info.system, cpu_info.iowait,
+                                                        cpu_info.steal, cpu_info.idle))
+    if x and m:
+        print(
+            'Device:         rrqm/s   wrqm/s     r/s     w/s    rMB/s    wMB/s avgrq-sz avgqu-sz   await r_await w_await  svctm  %util')
+        print('{:<18} {:<7} {:<7} {:<7} {:<9} {:<8} {:<10} {:<5} {:<10} {:<7} {:<7} {:<4} {:<6} {}'.format(dev_info.Device,
+            dev_info.rrqm_s, dev_info.wrqm_s, dev_info.r_s, dev_info.w_s, dev_info.rkB_s, dev_info.wkB_s,
+            dev_info.avgrq_sz, dev_info.avgqu_sz, dev_info.await_, dev_info.r_await, dev_info.w_await, dev_info.svctm,
+            dev_info.util))
+    elif x and not m:
+        pass
+    elif not x and m:
+        pass
     else:
-        if x:
-            print(
-                "Device:         rrqm/s   wrqm/s     r/s     w/s    rkB/s    wkB/s avgrq-sz avgqu-sz   await r_await w_await  svctm  %util")
-        else:
-            print("Device:            tps    kB_read/s    kB_wrtn/s    kB_read    kB_wrtn")
-
-
-def format_out_put(x: bool, m: bool, seconds, device: str):
-    device_output(x, m, device, seconds)
-
+        pass
+def main():
+    args = handle_args()
+    source_data, _ = proc_disk_tup(args['device'])
+    # old_cpu = proc_stat_tup()
+    # old, old_time = proc_disk_tup(args['device'])
+    # time.sleep(args['seconds'])
+    # new, new_time = proc_disk_tup(args['device'])
+    # new_cpu = proc_stat_tup()
+    # dif = dev_difference(old, new)
+    # interval = float(datetime.timestamp(new_time) - datetime.timestamp(old_time))
+    # cal_dev_targets(args['m'], interval, args['device'], source_data, dif)
+    # cpu_info(old_cpu, new_cpu)
+    # c = cpu_targets
+    # format_out_put(args['x'], args['m'], cpu_targets, dev_targets)
+    print(source_data)
+# _dev_targets = dev_targets()
 
 if __name__ == '__main__':
-    args = handle_args()
-    interval = args['seconds']  # 采样周期
-    # print(device_data(interval))
-    # print(stat_targets())
-    # print(avg_cpu_data())
-    format_out_put(args['x'], args['m'], args['seconds'], args['device'])
-    # sys_time()
-    # time.sleep(interval)
-    # output_values(interval)
-    # pprint(diskstats_targets())
+    main()
